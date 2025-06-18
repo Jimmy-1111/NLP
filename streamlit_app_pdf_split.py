@@ -82,25 +82,46 @@ def split_sentences(text):
 
 def main():
     st.title("PDF 語句分割器")
-    st.write("上傳 PDF 並指定頁碼範圍，分句後可下載 Excel 檔。")
+    st.write("上傳 PDF 並可多次選擇頁碼範圍，分句後可下載 Excel 檔。")
+
+    # 初始化多範圍記憶
+    if "ranges" not in st.session_state:
+        st.session_state["ranges"] = []
 
     pdf_file = st.file_uploader("請上傳 PDF 檔案", type="pdf")
-    start_page = st.number_input("開始頁碼（從 1 起算）", min_value=1, step=1)
-    end_page = st.number_input("結束頁碼（包含）", min_value=1, step=1)
 
-    if pdf_file and end_page >= start_page:
+    start_page = st.number_input("開始頁碼（從 1 起算）", min_value=1, step=1, key="start_page")
+    end_page = st.number_input("結束頁碼（包含）", min_value=1, step=1, key="end_page")
+
+    # 新增頁碼區間
+    if st.button("新增範圍"):
+        if end_page >= start_page:
+            st.session_state["ranges"].append((start_page, end_page))
+        else:
+            st.warning("結束頁碼不得小於開始頁碼")
+
+    # 列出已選範圍
+    if st.session_state["ranges"]:
+        st.write("已選擇範圍：")
+        for idx, (s, e) in enumerate(st.session_state["ranges"]):
+            st.write(f"{idx+1}. {s} - {e} 頁")
+
+    # 按下「選擇結束，開始分割」才進行動作
+    if st.button("選擇結束，開始分割") and pdf_file and st.session_state["ranges"]:
         st.info("⏳ 正在處理 PDF，請稍候...")
+
         data = []
         with pdfplumber.open(pdf_file) as pdf:
-            for i in range(start_page - 1, end_page):
-                if i < len(pdf.pages):
-                    page = pdf.pages[i]
-                    text = page.extract_text()
-                    sentences = split_sentences(text)
-                    if sentences and re.match(r'^\d{1,3}/\d{1,3}$', sentences[0]):
-                        sentences = sentences[1:]
-                    for idx, s in enumerate(sentences, 1):
-                        data.append({"頁碼": i+1, "語句編號": idx, "語句內容": s})
+            for (start_page, end_page) in st.session_state["ranges"]:
+                for i in range(start_page - 1, end_page):
+                    if i < len(pdf.pages):
+                        page = pdf.pages[i]
+                        text = page.extract_text()
+                        sentences = split_sentences(text)
+                        if sentences and re.match(r'^\d{1,3}/\d{1,3}$', sentences[0]):
+                            sentences = sentences[1:]
+                        for idx, s in enumerate(sentences, 1):
+                            data.append({"頁碼": i+1, "語句編號": idx, "語句內容": s})
 
         df = pd.DataFrame(data)
         st.success("✅ 分句完成！預覽如下：")
@@ -115,6 +136,7 @@ def main():
             file_name="pdf_sentences.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
+        st.session_state["ranges"] = []  # 處理後清空
 
 if __name__ == '__main__':
     main()
