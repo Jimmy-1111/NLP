@@ -26,7 +26,7 @@ def split_sentences(text):
 
         if buffer:
             if (
-                not re.search(r'[。．！？]$', buffer)
+                not re.search(r'[。．！？.!?]$', buffer)
                 and re.match(r'^[ぁ-んァ-ンa-zＡ-Ｚａ-ｚ一-龯A-Z（(【「『]', line)
             ):
                 buffer += line
@@ -44,10 +44,11 @@ def split_sentences(text):
         if re.match(r'^[(（]?[0-9０-９]{1,3}[)）]?.*$', line):
             split_by_punctuation.append(line)
         else:
-            segments = re.split(r'(。)', line)
+            # 支援中英文分句標點
+            segments = re.split(r'([。．！？.!?])', line)
             sentence = ""
             for seg in segments:
-                if seg == "。":
+                if seg in "。．！？.!?":
                     sentence += seg
                     if sentence.strip():
                         split_by_punctuation.append(sentence.strip())
@@ -175,4 +176,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
