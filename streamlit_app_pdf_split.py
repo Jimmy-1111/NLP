@@ -8,55 +8,11 @@ def split_sentences(text):
     if not text:
         return []
 
-    lines = text.splitlines()
-    merged_lines = []
-    buffer = ""
+    # 合併所有非空行，避免逐行誤分
+    cleaned_text = " ".join([line.strip() for line in text.splitlines() if line.strip()])
 
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-
-        if re.match(r'^\d{1,2}[ 　]*【.+】$', line) or re.match(r'^[(（][0-9０-９]{1,3}[)）]', line):
-            if buffer:
-                merged_lines.append(buffer)
-                buffer = ""
-            merged_lines.append(line)
-            continue
-
-        if buffer:
-            if (
-                not re.search(r'[。．！？.!?]$', buffer)
-                and re.match(r'^[ぁ-んァ-ンa-zＡ-Ｚａ-ｚ一-龯A-Z（(【「『]', line)
-            ):
-                buffer += line
-            else:
-                merged_lines.append(buffer)
-                buffer = line
-        else:
-            buffer = line
-
-    if buffer:
-        merged_lines.append(buffer)
-
-    split_by_punctuation = []
-    for line in merged_lines:
-        if re.match(r'^[(（]?[0-9０-９]{1,3}[)）]?.*$', line):
-            split_by_punctuation.append(line)
-        else:
-            # 支援中英文分句標點
-            segments = re.split(r'([。．！？.!?])', line)
-            sentence = ""
-            for seg in segments:
-                if seg in "。．！？.!?":
-                    sentence += seg
-                    if sentence.strip():
-                        split_by_punctuation.append(sentence.strip())
-                        sentence = ""
-                else:
-                    sentence += seg
-            if sentence.strip():
-                split_by_punctuation.append(sentence.strip())
+    # 用中英文句號、驚嘆號、問號斷句
+    raw_sentences = re.split(r'(?<=[。．！？.!?])', cleaned_text)
 
     exclude_keywords = [
         "EDINET提出書類",
@@ -66,7 +22,15 @@ def split_sentences(text):
     ]
 
     sentences = []
-    for s in split_by_punctuation:
+    for s in raw_sentences:
+        s = s.strip()
+        if not s:
+            continue
+
+        # 過濾短句或只有數字符號的碎片
+        if len(s) < 5 or re.fullmatch(r'^[\d\W\s]+$', s):
+            continue
+
         exclude = False
         for kw in exclude_keywords:
             if isinstance(kw, str) and kw in s:
@@ -75,6 +39,7 @@ def split_sentences(text):
             elif isinstance(kw, re.Pattern) and kw.search(s):
                 exclude = True
                 break
+
         if not exclude:
             sentences.append(s)
 
