@@ -1,161 +1,178 @@
-# -*- coding: utf-8 -*-
 import streamlit as st
-import pdfplumber, pandas as pd, re, io
-import tempfile, subprocess, os
-from pathlib import Path
+import pdfplumber
+import pandas as pd
+import re
+import io
 
-# ---------- 抽取層 ---------- #
-def has_enough_cjk(s, thresh=0.1):
-    cjk = re.findall(r'[\u3040-\u30ff\u4e00-\u9fff]', s)
-    return len(cjk) / max(len(s), 1) >= thresh
-
-def extract_pdfplumber(page):
-    return page.extract_text() or ""
-
-def extract_poppler(pdf_bytes, page_no):
-    # 寫進暫存 PDF
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tf:
-        tf.write(pdf_bytes)
-        pdf_path = tf.name
-    txt_path = pdf_path.replace(".pdf", ".txt")
-    try:
-        subprocess.run(
-            ["pdftotext", "-layout", "-enc", "UTF-8",
-             "-f", str(page_no), "-l", str(page_no),
-             pdf_path, txt_path],
-            check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-        )
-        txt = Path(txt_path).read_text(encoding="utf-8", errors="ignore")
-        return txt
-    except Exception:
-        return ""
-    finally:
-        for p in (pdf_path, txt_path):
-            if os.path.exists(p): os.unlink(p)
-
-def extract_ocr(pdf_bytes, page_no):
-    try:
-        from pdf2image import convert_from_bytes
-        import pytesseract
-        img = convert_from_bytes(pdf_bytes, dpi=300,
-                                 first_page=page_no, last_page=page_no)[0]
-        return pytesseract.image_to_string(img, lang="jpn")
-    except Exception:
-        return ""
-
-def extract_page_text(page, pdf_bytes, page_no, debug=False):
-    # 1. pdfplumber
-    txt = extract_pdfplumber(page)
-    if debug: st.write(f"📄{page_no} pdfplumber 字數: {len(txt)}  CJK 比: "
-                       f"{len(re.findall(r'[\\u3040-\\u30ff\\u4e00-\\u9fff]', txt))/max(len(txt),1):.1%}")
-    if has_enough_cjk(txt): return txt
-
-    # 2. Poppler
-    txt = extract_poppler(pdf_bytes, page_no)
-    if debug: st.write(f"📄{page_no} pdftotext  字數: {len(txt)}  CJK 比: "
-                       f"{len(re.findall(r'[\\u3040-\\u30ff\\u4e00-\\u9fff]', txt))/max(len(txt),1):.1%}")
-    if has_enough_cjk(txt): return txt
-
-    # 3. OCR
-    txt = extract_ocr(pdf_bytes, page_no)
-    if debug: st.write(f"📄{page_no} OCR        字數: {len(txt)}  CJK 比: "
-                       f"{len(re.findall(r'[\\u3040-\\u30ff\\u4e00-\\u9fff]', txt))/max(len(txt),1):.1%}")
-    return txt
-
-
-# ---------- 分句 ---------- #
 def split_sentences(text):
     if not text:
         return []
-    cleaned = " ".join(l.strip() for l in text.splitlines() if l.strip())
-    raw = re.split(r'(?<=[。．！？.!?])', cleaned)
+
+    lines = text.splitlines()
+    merged_lines = []
+    buffer = ""
+
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+
+        if re.match(r'^\d{1,2}[ 　]*【.+】$', line) or re.match(r'^[(（][0-9０-９]{1,3}[)）]', line):
+            if buffer:
+                merged_lines.append(buffer)
+                buffer = ""
+            merged_lines.append(line)
+            continue
+
+        if buffer:
+            if (
+                not re.search(r'[。．！？.!?]$', buffer)
+                and re.match(r'^[ぁ-んァ-ンa-zＡ-Ｚａ-ｚ一-龯A-Z（(【「『]', line)
+            ):
+                buffer += line
+            else:
+                merged_lines.append(buffer)
+                buffer = line
+        else:
+            buffer = line
+
+    if buffer:
+        merged_lines.append(buffer)
+
+    split_by_punctuation = []
+    for line in merged_lines:
+        if re.match(r'^[(（]?[0-9０-９]{1,3}[)）]?.*$', line):
+            split_by_punctuation.append(line)
+        else:
+            # 支援中英文分句標點
+            segments = re.split(r'([。．！？.!?])', line)
+            sentence = ""
+            for seg in segments:
+                if seg in "。．！？.!?":
+                    sentence += seg
+                    if sentence.strip():
+                        split_by_punctuation.append(sentence.strip())
+                        sentence = ""
+                else:
+                    sentence += seg
+            if sentence.strip():
+                split_by_punctuation.append(sentence.strip())
 
     exclude_keywords = [
-        "EDINET提出書類", "有価証券報告書",
-        re.compile(r'.+株式会社\(E\d{5}\)'), re.compile(r'^\d{1,3}/\d{1,3}$')
+        "EDINET提出書類",
+        "有価証券報告書",
+        re.compile(r'.+株式会社\(E\d{5}\)'),
+        re.compile(r'^\d{1,3}/\d{1,3}$')
     ]
 
-    sents = []
-    for s in raw:
-        s = s.strip()
-        if not s or len(s) < 5 or re.fullmatch(r'^[\d\W\s]+$', s):
-            continue
-        if not re.search(r'[\u3040-\u30ff\u4e00-\u9fff]', s):
-            continue
-        if any((kw in s) if isinstance(kw, str) else kw.search(s)
-               for kw in exclude_keywords):
-            continue
-        sents.append(s)
-    return sents
+    sentences = []
+    for s in split_by_punctuation:
+        exclude = False
+        for kw in exclude_keywords:
+            if isinstance(kw, str) and kw in s:
+                exclude = True
+                break
+            elif isinstance(kw, re.Pattern) and kw.search(s):
+                exclude = True
+                break
+        if not exclude:
+            sentences.append(s)
 
+    return sentences
 
-# ---------- Streamlit 主體 ---------- #
 def main():
-    st.title("📄 PDF 分句下載器（plumber → Poppler → OCR）")
-    st.markdown("**依序嘗試 pdfplumber → pdftotext → Tesseract-OCR**，抓到日文即分句。")
+    st.title("📄 PDF 語句分割器")
+    st.write("上傳 PDF 並可多次選擇頁碼範圍，分句後可下載 Excel 檔。")
 
-    # ----- 範圍選擇 ----- #
-    if "ranges" not in st.session_state: st.session_state["ranges"] = []
+    # 初始化
+    if "ranges" not in st.session_state:
+        st.session_state["ranges"] = []
 
-    pdf_file = st.file_uploader("上傳 PDF", type="pdf")
-    c1, c2 = st.columns(2)
-    with c1:
-        sp = st.number_input("開始頁", 1, step=1, value=1)
-    with c2:
-        ep = st.number_input("結束頁", 1, step=1, value=1)
+    # 上傳 PDF
+    pdf_file = st.file_uploader("請上傳 PDF 檔案", type="pdf")
+
+    # 頁碼選擇
+    start_page = st.number_input("開始頁碼（從 1 起算）", min_value=1, step=1, key="start_page")
+    end_page = st.number_input("結束頁碼（包含）", min_value=1, step=1, key="end_page")
+
     if st.button("➕ 新增範圍"):
-        if ep >= sp:
-            st.session_state["ranges"].append((sp, ep))
+        if end_page >= start_page:
+            st.session_state["ranges"].append((start_page, end_page))
         else:
-            st.warning("結束頁必須 ≥ 開始頁")
-    for i, (s, e) in enumerate(st.session_state["ranges"], 1):
-        st.write(f"{i}. 第 {s}–{e} 頁")
+            st.warning("⚠️ 結束頁碼不得小於開始頁碼")
 
-    # ----- 命名欄 ----- #
-    company = st.text_input("企業名稱")
-    year    = st.text_input("年份(4位)")
-    month   = st.text_input("月")
-    day     = st.text_input("日")
+    if st.session_state["ranges"]:
+        st.markdown("🗂️ **已選範圍：**")
+        for idx, (s, e) in enumerate(st.session_state["ranges"]):
+            st.write(f"{idx+1}. 第 {s} 到第 {e} 頁")
 
-    # ----- 執行 ----- #
-    if st.button("🚀 開始處理") and pdf_file and st.session_state["ranges"]:
-        st.info("解析中…")
-        out_name = "_".join(filter(None, [company, year, month, day])) or "output"
-        out_name += ".xlsx"
+    # 使用者輸入
+    company = st.text_input("企業名稱（中日英文、數字、日文假名、符號皆可）")
+    year = st.text_input("年份（例如：2024）")
+    month = st.text_input("月份（可空白）")
+    day = st.text_input("日期（可空白）")
+    custom_filename = st.text_input("（選填）自訂檔名（含 .xlsx 或不含皆可）", "")
 
-        bytes_data = pdf_file.getvalue()
-        data = []
-        with pdfplumber.open(io.BytesIO(bytes_data)) as pdf:
-            total_pages = sum(e - s + 1 for s, e in st.session_state["ranges"])
-            prog = st.progress(0)
-            done = 0
-            for s, e in st.session_state["ranges"]:
-                for idx_page in range(s - 1, e):
-                    if idx_page >= len(pdf.pages): continue
-                    page = pdf.pages[idx_page]
-                    text = extract_page_text(page, bytes_data, idx_page + 1, debug=True)
-                    for idx_sent, sent in enumerate(split_sentences(text), 1):
-                        data.append({"頁碼": idx_page + 1,
-                                     "語句編號": idx_sent,
-                                     "語句內容": sent})
-                    done += 1
-                    prog.progress(done / total_pages)
+    # 驗證格式
+    valid_company = bool(re.match(r"^[\u4e00-\u9fa5A-Za-z0-9\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uFF66-\uFF9D\u3000-\u303F・ー\s\-\(\)\[\]【】『』「」、。]+$", company))
+    valid_year = bool(re.match(r"^\d{4}$", year))
+    valid_month = (month == '' or re.match(r"^(0?[1-9]|1[0-2])$", month))
+    valid_day = (day == '' or re.match(r"^(0?[1-9]|[12][0-9]|3[01])$", day))
 
-        df = pd.DataFrame(data)
-        if df.empty:
-            st.error("⚠️ 三層抽取皆未抓到有效日文，或全部句子被過濾。可檢查 Poppler/Tesseract 安裝情況，或放寬過濾條件。")
-            return
-        st.success("完成！")
-        st.dataframe(df, use_container_width=True)
+    if company and not valid_company:
+        st.error("❌ 企業名稱只能包含中日英文、數字、假名與常用符號。")
+    if year and not valid_year:
+        st.error("❌ 年份必須是4位數字")
+    if month and not valid_month:
+        st.error("❌ 月份格式錯誤（請輸入 1~12 或留空）")
+    if day and not valid_day:
+        st.error("❌ 日期格式錯誤（請輸入 1~31 或留空）")
 
-        buf = io.BytesIO()
-        with pd.ExcelWriter(buf, engine="openpyxl") as w:
-            df.to_excel(w, index=False)
-        st.download_button("📥 下載 Excel", buf.getvalue(), file_name=out_name,
-                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    # 組合檔名
+    if custom_filename:
+        filename = custom_filename if custom_filename.endswith(".xlsx") else custom_filename + ".xlsx"
+    else:
+        filename_parts = [company.strip(), year.strip()]
+        if month:
+            filename_parts.append(str(int(month)))
+        if day:
+            filename_parts.append(str(int(day)))
+        filename = "_".join(filename_parts) + ".xlsx"
 
-        st.session_state["ranges"] = []  # reset
+    # 處理 PDF
+    if st.button("🚀 選擇結束，開始分割") and pdf_file and st.session_state["ranges"]:
+        if not (company and year and valid_company and valid_year and valid_month and valid_day):
+            st.warning("⚠️ 請正確填寫企業名稱與年份（必填），月份/日期可空白。")
+        else:
+            st.info("⏳ 處理中，請稍候...")
 
+            data = []
+            with pdfplumber.open(pdf_file) as pdf:
+                for (start_page, end_page) in st.session_state["ranges"]:
+                    for i in range(start_page - 1, end_page):
+                        if i < len(pdf.pages):
+                            page = pdf.pages[i]
+                            text = page.extract_text()
+                            sentences = split_sentences(text)
+                            if sentences and re.match(r'^\d{1,3}/\d{1,3}$', sentences[0]):
+                                sentences = sentences[1:]
+                            for idx, s in enumerate(sentences, 1):
+                                data.append({"頁碼": i + 1, "語句編號": idx, "語句內容": s})
 
-if __name__ == "__main__":
+            df = pd.DataFrame(data)
+            st.success("✅ 分句完成！預覽如下：")
+            st.dataframe(df, use_container_width=True)
+
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                df.to_excel(writer, index=False)
+            st.download_button(
+                label="📥 下載 Excel 檔",
+                data=output.getvalue(),
+                file_name=filename,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+            st.session_state["ranges"] = []
+
+if __name__ == '__main__':
     main()
