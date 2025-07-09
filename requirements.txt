@@ -1,4 +1,5 @@
 streamlit
 pdfplumber
+pytesseract
 pandas
 openpyxl
