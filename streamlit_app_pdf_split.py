@@ -7,10 +7,10 @@ import re
 import io
 import os
 
-# 設定 Tesseract 的語言資料路徑
+# 設定 pytesseract 執行檔路徑（macOS Homebrew 安裝預設路徑）
+pytesseract.pytesseract.tesseract_cmd = "/opt/homebrew/bin/tesseract"
 os.environ["TESSDATA_PREFIX"] = "/opt/homebrew/share/"
 
-# 分句函數
 def split_sentences(text):
     if not text:
         return []
@@ -86,18 +86,17 @@ def split_sentences(text):
 
     return sentences
 
-# 主函數
 def main():
     st.title("📄 PDF/圖片語句分割器")
     st.write("上傳 PDF 或圖片進行語句分割，支援日文 OCR 與分句")
 
-    # 初始化 session 狀態
     if "ranges" not in st.session_state:
         st.session_state["ranges"] = []
 
-    # 🧾 PDF 上傳與頁碼設定
+    # PDF 區段
     st.subheader("📕 PDF 分句區段")
     pdf_file = st.file_uploader("請上傳 PDF 檔案", type="pdf")
+
     start_page = st.number_input("開始頁碼（從 1 起算）", min_value=1, step=1, key="start_page")
     end_page = st.number_input("結束頁碼（包含）", min_value=1, step=1, key="end_page")
 
@@ -112,11 +111,11 @@ def main():
         for idx, (s, e) in enumerate(st.session_state["ranges"]):
             st.write(f"{idx+1}. 第 {s} 到第 {e} 頁")
 
-    # 🖼️ 圖片 OCR 區段
+    # 圖片 OCR 區段
     st.subheader("🖼️ 圖片 OCR 區段")
     image_file = st.file_uploader("上傳圖片（JPG、PNG）進行 OCR 與分句", type=["png", "jpg", "jpeg"])
 
-    # 📋 基本資料與檔名設定
+    # 基本欄位輸入
     st.subheader("📝 基本資料與下載命名")
     company = st.text_input("企業名稱（中日英文、數字、日文假名、符號皆可）")
     year = st.text_input("年份（例如：2024）")
@@ -124,7 +123,6 @@ def main():
     day = st.text_input("日期（可空白）")
     custom_filename = st.text_input("（選填）自訂檔名（含 .xlsx 或不含皆可）", "")
 
-    # 檢查輸入格式
     valid_company = bool(re.match(r"^[\u4e00-\u9fa5A-Za-z0-9\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uFF66-\uFF9D\u3000-\u303F・ー\s\-\(\)\[\]【】『』「」、。]+$", company))
     valid_year = bool(re.match(r"^\d{4}$", year))
     valid_month = (month == '' or re.match(r"^(0?[1-9]|1[0-2])$", month))
@@ -139,7 +137,7 @@ def main():
     if day and not valid_day:
         st.error("❌ 日期格式錯誤（請輸入 1~31 或留空）")
 
-    # 檔名組合
+    # 檔案命名
     if custom_filename:
         filename = custom_filename if custom_filename.endswith(".xlsx") else custom_filename + ".xlsx"
     else:
@@ -150,15 +148,14 @@ def main():
             filename_parts.append(str(int(day)))
         filename = "_".join(filename_parts) + ".xlsx"
 
-    # 處理按鈕
-    if st.button("🚀 開始處理"):
+    # 主按鈕
+    if st.button("🚀 選擇結束，開始分割"):
         if not (company and year and valid_company and valid_year and valid_month and valid_day):
             st.warning("⚠️ 請正確填寫企業名稱與年份（必填），月份/日期可空白。")
             return
 
         data = []
 
-        # PDF 語句擷取
         if pdf_file and st.session_state["ranges"]:
             with pdfplumber.open(pdf_file) as pdf:
                 for (start_page, end_page) in st.session_state["ranges"]:
@@ -172,7 +169,6 @@ def main():
                             for idx, s in enumerate(sentences, 1):
                                 data.append({"來源": f"PDF第{i+1}頁", "語句編號": idx, "語句內容": s})
 
-        # 圖片 OCR
         if image_file:
             image = Image.open(image_file)
             ocr_text = pytesseract.image_to_string(image, lang="jpn")
@@ -180,7 +176,6 @@ def main():
             for idx, s in enumerate(sentences, 1):
                 data.append({"來源": "圖片OCR", "語句編號": idx, "語句內容": s})
 
-        # 輸出
         if data:
             df = pd.DataFrame(data)
             st.success("✅ 處理完成！")
@@ -199,6 +194,5 @@ def main():
         else:
             st.warning("⚠️ 沒有處理任何資料，請確認有上傳 PDF 或圖片。")
 
-# 執行
 if __name__ == '__main__':
     main()
